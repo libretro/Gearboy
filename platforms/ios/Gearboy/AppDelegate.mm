@@ -33,7 +33,9 @@
     navigationController.topViewController.navigationItem.leftBarButtonItem = splitViewController.displayModeButtonItem;
     splitViewController.delegate = self;
     splitViewController.presentsWithGesture = NO;
+    splitViewController.preferredDisplayMode = UISplitViewControllerDisplayModePrimaryOverlay;
     masterViewController = (MasterViewController *)[[splitViewController.viewControllers firstObject] topViewController];
+    
     return YES;
 }
 
@@ -69,6 +71,16 @@
 
 - (BOOL)application:(UIApplication *)application openURL:(NSURL *)url sourceApplication:(NSString *)sourceApplication annotation:(id)annotation
 {
+    return [self openGearboyURL:url];
+}
+
+- (BOOL)application:(UIApplication *)app openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
+    return [self openGearboyURL:url];
+}
+
+#pragma mark - Private Methods
+
+- (BOOL)openGearboyURL:(NSURL *)url {
     if (url != nil && [url isFileURL])
     {
         NSString *documentsDirectory = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) objectAtIndex:0];
@@ -106,18 +118,6 @@
     } else {
         return NO;
     }
-}
-
-- (BOOL)splitViewController:(UISplitViewController*)svc
-   shouldHideViewController:(UIViewController *)vc
-              inOrientation:(UIInterfaceOrientation)orientation
-{
-    return YES;
-}
-
-- (void)splitViewController:(UISplitViewController *)splitController willHideViewController:(UIViewController *)viewController withBarButtonItem:(UIBarButtonItem *)barButtonItem forPopoverController:(UIPopoverController *)popoverController
-{
-    masterViewController.popover = popoverController;
 }
 
 @end

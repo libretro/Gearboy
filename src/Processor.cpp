@@ -42,10 +42,19 @@ Processor::Processor(Memory* pMemory)
     m_iSerialCycles = 0;
     m_bCGB = false;
     m_iUnhaltCycles = 0;
-    for (int i = 0; i < 5; i++)
-        m_InterruptDelayCycles[i] = 0;
+    m_iInterruptDelayCycles = 0;
     m_iAccurateOPCodeState = 0;
     m_iReadCache = 0;
+    m_bBreakpointHit = false;
+
+    m_ProcessorState.AF = &AF;
+    m_ProcessorState.BC = &BC;
+    m_ProcessorState.DE = &DE;
+    m_ProcessorState.HL = &HL;
+    m_ProcessorState.SP = &SP;
+    m_ProcessorState.PC = &PC;
+    m_ProcessorState.IME = &m_bIME;
+    m_ProcessorState.Halt = &m_bHalt;
 }
 
 Processor::~Processor()
@@ -82,302 +91,207 @@ void Processor::Reset(bool bCGB)
     BC.SetValue(0x0013);
     DE.SetValue(0x00D8);
     HL.SetValue(0x014D);
-    for (int i = 0; i < 5; i++)
-        m_InterruptDelayCycles[i] = 0;
+    m_iInterruptDelayCycles = 0;
     m_iAccurateOPCodeState = 0;
     m_iReadCache = 0;
     m_GameSharkList.clear();
+    m_bBreakpointHit = false;
 }
 
-u8 Processor::Tick()
+u8 Processor::RunFor(u8 ticks)
 {
-    m_iCurrentClockCycles = 0;
+    u8 executed = 0;
 
-    if (m_iAccurateOPCodeState == 0 && m_bHalt)
+    while (executed < ticks)
     {
-        m_iCurrentClockCycles += AdjustedCycles(4);
+        m_iCurrentClockCycles = 0;
+        m_bBreakpointHit = false;
 
-        if (m_iUnhaltCycles > 0)
+        if (m_iAccurateOPCodeState == 0 && m_bHalt)
         {
-            m_iUnhaltCycles -= m_iCurrentClockCycles;
+            m_iCurrentClockCycles += AdjustedCycles(4);
 
-            if (m_iUnhaltCycles <= 0)
+            if (m_iUnhaltCycles > 0)
             {
-                m_iUnhaltCycles = 0;
-                m_bHalt = false;
+                m_iUnhaltCycles -= m_iCurrentClockCycles;
+
+                if (m_iUnhaltCycles <= 0)
+                {
+                    m_iUnhaltCycles = 0;
+                    m_bHalt = false;
+                }
+            }
+
+            if (m_bHalt && (InterruptPending() != None_Interrupt) && (m_iUnhaltCycles == 0))
+            {
+                m_iUnhaltCycles = AdjustedCycles(12);
             }
         }
 
-        if (m_bHalt && (InterruptPending() != None_Interrupt) && (m_iUnhaltCycles == 0))
+        bool interrupt_served = false;
+
+        if (!m_bHalt)
         {
-            m_iUnhaltCycles = AdjustedCycles(12);
+            Interrupts interrupt = InterruptPending();
+
+            if (m_bIME && (interrupt != None_Interrupt) && (m_iAccurateOPCodeState == 0))
+            {
+                ServeInterrupt(interrupt);
+                interrupt_served = true;
+            }
+            else
+            {
+                u8 opcode = m_pMemory->Read(PC.GetValue());
+                PC.Increment();
+
+                if (m_bSkipPCBug)
+                {
+                    m_bSkipPCBug = false;
+                    PC.Decrement();
+                }
+
+                const u8* accurateOPcodes;
+                const u8* machineCycles;
+                OPCptr* opcodeTable;
+                bool isCB = (opcode == 0xCB);
+
+                if (isCB)
+                {
+                    accurateOPcodes = kOPCodeCBAccurate;
+                    machineCycles = kOPCodeCBMachineCycles;
+                    opcodeTable = m_OPCodesCB;
+
+                    opcode = m_pMemory->Read(PC.GetValue());
+                    PC.Increment();
+
+                    if (m_bSkipPCBug)
+                    {
+                        m_bSkipPCBug = false;
+                        PC.Decrement();
+                    }
+                }
+                else
+                {
+                    accurateOPcodes = kOPCodeAccurate;
+                    machineCycles = kOPCodeMachineCycles;
+                    opcodeTable = m_OPCodes;
+                }
+
+                if ((accurateOPcodes[opcode] != 0) && (m_iAccurateOPCodeState == 0))
+                {
+                    int left_cycles = (accurateOPcodes[opcode] < 3 ? 2 : 3);
+                    m_iCurrentClockCycles += (machineCycles[opcode] - left_cycles) * AdjustedCycles(4);
+                    m_iAccurateOPCodeState = 1;
+                    PC.Decrement();
+                    if (isCB)
+                        PC.Decrement();
+                }
+                else
+                {
+                    (this->*opcodeTable[opcode])();
+
+                    if (m_bBranchTaken)
+                    {
+                        m_bBranchTaken = false;
+                        m_iCurrentClockCycles += kOPCodeBranchMachineCycles[opcode] * AdjustedCycles(4);
+                    }
+                    else
+                    {
+                        switch (m_iAccurateOPCodeState)
+                        {
+                        case 0:
+                            m_iCurrentClockCycles += machineCycles[opcode] * AdjustedCycles(4);
+                            break;
+                        case 1:
+                            if (accurateOPcodes[opcode] == 3)
+                            {
+                                m_iCurrentClockCycles += 1 * AdjustedCycles(4);
+                                m_iAccurateOPCodeState = 2;
+                                PC.Decrement();
+                                if (isCB)
+                                    PC.Decrement();
+                            }
+                            else
+                            {
+                                m_iCurrentClockCycles += 2 * AdjustedCycles(4);
+                                m_iAccurateOPCodeState = 0;
+                            }
+                            break;
+                        case 2:
+                            m_iCurrentClockCycles += 2 * AdjustedCycles(4);
+                            m_iAccurateOPCodeState = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            #ifndef GEARBOY_DISABLE_DISASSEMBLER
+            m_bBreakpointHit = Disassemble(PC.GetValue());
+            #endif
         }
-    }
 
-    if (!m_bHalt)
-    {
-        if (m_iAccurateOPCodeState == 0)
-            ServeInterrupt(InterruptPending());
-
-        ExecuteOPCode(FetchOPCode());
-    }
-
-    UpdateDelayedInterrupts();
-    UpdateTimers();
-    UpdateSerial();
-
-    if (m_iAccurateOPCodeState == 0 && m_iIMECycles > 0)
-    {
-        m_iIMECycles -= m_iCurrentClockCycles;
-
-        if (m_iIMECycles <= 0)
+        if (!interrupt_served && (m_iInterruptDelayCycles > 0))
         {
-            m_iIMECycles = 0;
-            m_bIME = true;
+            m_iInterruptDelayCycles -= m_iCurrentClockCycles;
         }
+
+        if (!interrupt_served && (m_iAccurateOPCodeState == 0) && (m_iIMECycles > 0))
+        {
+            m_iIMECycles -= m_iCurrentClockCycles;
+
+            if (m_iIMECycles <= 0)
+            {
+                m_iIMECycles = 0;
+                m_bIME = true;
+            }
+        }
+
+        executed += m_iCurrentClockCycles;
     }
 
-    return m_iCurrentClockCycles;
+    return executed;
 }
 
-void Processor::RequestInterrupt(Interrupts interrupt)
+void Processor::ServeInterrupt(Interrupts interrupt)
 {
-    m_pMemory->Load(0xFF0F, m_pMemory->Retrieve(0xFF0F) | interrupt);
-
+    u8 if_reg = m_pMemory->Retrieve(0xFF0F);
+    m_bIME = false;
+    StackPush(&PC);
+    m_iCurrentClockCycles += AdjustedCycles(20);
+    
     switch (interrupt)
     {
         case VBlank_Interrupt:
-            m_InterruptDelayCycles[0] = (m_bCGBSpeed ? 0 : 4);
+            m_iInterruptDelayCycles= 0;
+            m_pMemory->Load(0xFF0F, if_reg & 0xFE);
+            PC.SetValue(0x0040);
+            UpdateGameShark();
             break;
         case LCDSTAT_Interrupt:
-            m_InterruptDelayCycles[1] = 0;
+            m_pMemory->Load(0xFF0F, if_reg & 0xFD);
+            PC.SetValue(0x0048);
             break;
         case Timer_Interrupt:
-            m_InterruptDelayCycles[2] = 0;
+            m_pMemory->Load(0xFF0F, if_reg & 0xFB);
+            PC.SetValue(0x0050);
             break;
         case Serial_Interrupt:
-            m_InterruptDelayCycles[3] = 0;
+            m_pMemory->Load(0xFF0F, if_reg & 0xF7);
+            PC.SetValue(0x0058);
             break;
         case Joypad_Interrupt:
-            m_InterruptDelayCycles[4] = 0;
+            m_pMemory->Load(0xFF0F, if_reg & 0xEF);
+            PC.SetValue(0x0060);
             break;
         case None_Interrupt:
             break;
     }
 }
 
-void Processor::ResetTIMACycles()
+void Processor::UpdateTimers(u8 ticks)
 {
-    m_iTIMACycles = 0;
-    m_pMemory->Load(0xFF05, m_pMemory->Retrieve(0xFF06));
-}
-
-void Processor::ResetDIVCycles()
-{
-    m_iDIVCycles = 0;
-    m_pMemory->Load(0xFF04, 0x00);
-}
-
-bool Processor::Halted() const
-{
-    return m_bHalt;
-}
-
-bool Processor::CGBSpeed() const
-{
-    return m_bCGBSpeed;
-}
-
-void Processor::AddCycles(unsigned int cycles)
-{
-    m_iCurrentClockCycles += cycles;
-}
-
-u8 Processor::FetchOPCode()
-{
-    u8 opcode = m_pMemory->Read(PC.GetValue());
-    PC.Increment();
-
-    if (m_bSkipPCBug)
-    {
-        m_bSkipPCBug = false;
-        PC.Decrement();
-    }
-    return opcode;
-}
-
-void Processor::ExecuteOPCode(u8 opcode)
-{
-    const u8* accurateOPcodes;
-    const u8* machineCycles;
-    OPCptr* opcodeTable;
-    bool isCB = (opcode == 0xCB);
-
-    if (isCB)
-    {
-        accurateOPcodes = kOPCodeCBAccurate;
-        machineCycles = kOPCodeCBMachineCycles;
-        opcodeTable = m_OPCodesCB;
-        opcode = FetchOPCode();
-    }
-    else
-    {
-        accurateOPcodes = kOPCodeAccurate;
-        machineCycles = kOPCodeMachineCycles;
-        opcodeTable = m_OPCodes;
-    }
-
-    #ifdef DEBUG_GEARBOY
-        u16 opcode_address = PC.GetValue() - 1;
-        if (!m_pMemory->IsDisassembled(opcode_address))
-        {
-            m_pMemory->Disassemble(opcode_address, isCB ? kOPCodeCBNames[opcode] : kOPCodeNames[opcode]);
-        }
-    #endif
-
-    if ((accurateOPcodes[opcode] != 0) && (m_iAccurateOPCodeState == 0))
-    {
-        int left_cycles = (accurateOPcodes[opcode] < 3 ? 2 : 3);
-        m_iCurrentClockCycles += (machineCycles[opcode] - left_cycles) * AdjustedCycles(4);
-        m_iAccurateOPCodeState = 1;
-        PC.Decrement();
-        if (isCB)
-            PC.Decrement();
-        return;
-    }
-
-    (this->*opcodeTable[opcode])();
-
-    if (m_bBranchTaken)
-    {
-        m_bBranchTaken = false;
-        m_iCurrentClockCycles += kOPCodeBranchMachineCycles[opcode] * AdjustedCycles(4);
-    }
-    else
-    {
-        switch (m_iAccurateOPCodeState)
-        {
-        case 0:
-            m_iCurrentClockCycles += machineCycles[opcode] * AdjustedCycles(4);
-            break;
-        case 1:
-            if (accurateOPcodes[opcode] == 3)
-            {
-                m_iCurrentClockCycles += 1 * AdjustedCycles(4);
-                m_iAccurateOPCodeState = 2;
-                PC.Decrement();
-                if (isCB)
-                    PC.Decrement();
-            }
-            else
-            {
-                m_iCurrentClockCycles += 2 * AdjustedCycles(4);
-                m_iAccurateOPCodeState = 0;
-            }
-            break;
-        case 2:
-            m_iCurrentClockCycles += 2 * AdjustedCycles(4);
-            m_iAccurateOPCodeState = 0;
-            break;
-        }
-    }
-}
-
-bool Processor::InterruptIsAboutToRaise()
-{
-    u8 ie_reg = m_pMemory->Retrieve(0xFFFF);
-    u8 if_reg = m_pMemory->Retrieve(0xFF0F);
-
-    return (if_reg & ie_reg & 0x1F) != 0;
-}
-
-Processor::Interrupts Processor::InterruptPending()
-{
-    u8 ie_reg = m_pMemory->Retrieve(0xFFFF);
-    u8 if_reg = m_pMemory->Retrieve(0xFF0F);
-    u8 ie_if = if_reg & ie_reg;
-
-    if ((ie_if & 0x01) && (m_InterruptDelayCycles[0] <= 0))
-    {
-        return VBlank_Interrupt;
-    }
-    else if ((ie_if & 0x02) && (m_InterruptDelayCycles[1] <= 0))
-    {
-        return LCDSTAT_Interrupt;
-    }
-    else if ((ie_if & 0x04) && (m_InterruptDelayCycles[2] <= 0))
-    {
-        return Timer_Interrupt;
-    }
-    else if ((ie_if & 0x08) && (m_InterruptDelayCycles[3] <= 0))
-    {
-        return Serial_Interrupt;
-    }
-    else if ((ie_if & 0x10) && (m_InterruptDelayCycles[4] <= 0))
-    {
-        return Joypad_Interrupt;
-    }
-
-    return None_Interrupt;
-}
-
-void Processor::ServeInterrupt(Interrupts interrupt)
-{
-    if (m_bIME)
-    {
-        u8 if_reg = m_pMemory->Retrieve(0xFF0F);
-        switch (interrupt)
-        {
-            case VBlank_Interrupt:
-                m_InterruptDelayCycles[0] = 0;
-                m_pMemory->Load(0xFF0F, if_reg & 0xFE);
-                m_bIME = false;
-                StackPush(&PC);
-                PC.SetValue(0x0040);
-                m_iCurrentClockCycles += AdjustedCycles(20);
-                UpdateGameShark();
-                break;
-            case LCDSTAT_Interrupt:
-                m_InterruptDelayCycles[1] = 0;
-                m_pMemory->Load(0xFF0F, if_reg & 0xFD);
-                m_bIME = false;
-                StackPush(&PC);
-                PC.SetValue(0x0048);
-                m_iCurrentClockCycles += AdjustedCycles(20);
-                break;
-            case Timer_Interrupt:
-                m_InterruptDelayCycles[2] = 0;
-                m_pMemory->Load(0xFF0F, if_reg & 0xFB);
-                m_bIME = false;
-                StackPush(&PC);
-                PC.SetValue(0x0050);
-                m_iCurrentClockCycles += AdjustedCycles(20);
-                break;
-            case Serial_Interrupt:
-                m_InterruptDelayCycles[3] = 0;
-                m_pMemory->Load(0xFF0F, if_reg & 0xF7);
-                m_bIME = false;
-                StackPush(&PC);
-                PC.SetValue(0x0058);
-                m_iCurrentClockCycles += AdjustedCycles(20);
-                break;
-            case Joypad_Interrupt:
-                m_InterruptDelayCycles[4] = 0;
-                m_pMemory->Load(0xFF0F, if_reg & 0xEF);
-                m_bIME = false;
-                StackPush(&PC);
-                PC.SetValue(0x0060);
-                m_iCurrentClockCycles += AdjustedCycles(20);
-                break;
-            case None_Interrupt:
-                break;
-        }
-    }
-}
-
-void Processor::UpdateTimers()
-{
-    m_iDIVCycles += m_iCurrentClockCycles;
+    m_iDIVCycles += ticks;
 
     unsigned int div_cycles = AdjustedCycles(256);
 
@@ -394,7 +308,7 @@ void Processor::UpdateTimers()
     // if tima is running
     if (tac & 0x04)
     {
-        m_iTIMACycles += m_iCurrentClockCycles;
+        m_iTIMACycles += ticks;
 
         unsigned int freq = 0;
 
@@ -432,13 +346,13 @@ void Processor::UpdateTimers()
     }
 }
 
-void Processor::UpdateSerial()
+void Processor::UpdateSerial(u8 ticks)
 {
     u8 sc = m_pMemory->Retrieve(0xFF02);
 
     if (IsSetBit(sc, 7) && IsSetBit(sc, 0))
     {
-        m_iSerialCycles += m_iCurrentClockCycles;
+        m_iSerialCycles += ticks;
 
         if (m_iSerialBit < 0)
         {
@@ -471,17 +385,6 @@ void Processor::UpdateSerial()
     }
 }
 
-void Processor::UpdateDelayedInterrupts()
-{
-    for (int i = 0; i < 5; i++)
-    {
-        if (m_InterruptDelayCycles[i] > 0)
-        {
-            m_InterruptDelayCycles[i] -= m_iCurrentClockCycles;
-        }
-    }
-}
-
 void Processor::UpdateGameShark()
 {
     std::list<GameSharkCode>::iterator it;
@@ -493,6 +396,156 @@ void Processor::UpdateGameShark()
             m_pMemory->Write(it->address, it->value);
         }
     }
+}
+
+bool Processor::Disassemble(u16 address)
+{
+    Memory::stDisassembleRecord** memoryMap = m_pMemory->GetDisassembledMemoryMap();
+    Memory::stDisassembleRecord** romMap = m_pMemory->GetDisassembledROMMemoryMap();
+
+    Memory::stDisassembleRecord** map = NULL;
+
+    int offset = address;
+    int bank = 0;
+    bool rom = false;
+
+    if ((address & 0xC000) == 0x0000)
+    {
+        bank = m_pMemory->GetCurrentRule()->GetCurrentRomBank0Index();
+        offset = (0x4000 * bank) + address;
+        map = romMap;
+        rom = true;
+    }
+    else if ((address & 0xC000) == 0x4000)
+    {
+        bank = m_pMemory->GetCurrentRule()->GetCurrentRomBank1Index();
+        offset = (0x4000 * bank) + (address & 0x3FFF);
+        map = romMap;
+        rom = true;
+    }
+    else
+    {
+        map = memoryMap;
+        rom = false;
+    }
+
+    if (!IsValidPointer(map[offset]))
+    {
+        map[offset] = new Memory::stDisassembleRecord;
+
+        if (rom)
+        {
+            map[offset]->address = offset & 0x3FFF;
+            map[offset]->bank = offset >> 14;
+        }
+        else
+        {
+            map[offset]->address = 0;
+            map[offset]->bank = 0;
+        }
+
+        map[offset]->name[0] = 0;
+        map[offset]->bytes[0] = 0;
+        map[offset]->size = 0;
+    }
+
+    if (map[offset]->size == 0)
+    {
+        map[offset]->bank = bank;
+        map[offset]->address = address;
+
+        u8 bytes[4];
+
+        for (int i = 0; i < 4; i++)
+            bytes[i] = m_pMemory->Read(address + i);
+
+        u8 opcode = bytes[0];
+        bool cb = false;
+
+        if (opcode == 0xCB)
+        {
+            cb = true;
+            opcode = bytes[1];
+        }
+
+        stOPCodeInfo info = cb ? kOPCodeCBNames[opcode] : kOPCodeNames[opcode];
+
+        map[offset]->size = info.size;
+
+        map[offset]->bytes[0] = 0;
+
+        for (int i = 0; i < 4; i++)
+        {
+            if (i < info.size)
+            {
+                char value[8];
+                sprintf(value, "%02X", bytes[i]);
+                strcat(map[offset]->bytes, value);
+            }
+            else
+            {
+                strcat(map[offset]->bytes, "  ");
+            }
+
+            if (i < 3)
+                strcat(map[offset]->bytes, " ");
+        }
+
+        switch (info.type)
+        {
+            case 0:
+                strcpy(map[offset]->name, info.name);
+                break;
+            case 1:
+                sprintf(map[offset]->name, info.name, bytes[1]);
+                break;
+            case 2:
+                sprintf(map[offset]->name, info.name, (bytes[2] << 8) | bytes[1]);
+                break;
+            case 3:
+                sprintf(map[offset]->name, info.name, (s8)bytes[1]);
+                break;
+            case 4:
+                sprintf(map[offset]->name, info.name, address + info.size + (s8)bytes[1], (s8)bytes[1]);
+                break;
+            case 5:
+                sprintf(map[offset]->name, info.name, bytes[1], kRegisterNames[bytes[1]]);
+                break;
+            default:
+                strcpy(map[offset]->name, "PARSE ERROR");
+        }
+    }
+
+    Memory::stDisassembleRecord* runtobreakpoint = m_pMemory->GetRunToBreakpoint();
+    std::vector<Memory::stDisassembleRecord*>* breakpoints = m_pMemory->GetBreakpoints();
+
+    if (IsValidPointer(runtobreakpoint))
+    {
+        if (runtobreakpoint == map[offset])
+        {
+            m_pMemory->SetRunToBreakpoint(NULL);
+            return true;
+        }
+        else
+            return false;
+    }
+    else
+    {
+        for (long unsigned int b = 0; b < breakpoints->size(); b++)
+        {
+            if ((*breakpoints)[b] == map[offset])
+            {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool Processor::BreakpointHit()
+{
+    return m_bBreakpointHit;
 }
 
 void Processor::SaveState(std::ostream& stream)
@@ -524,7 +577,7 @@ void Processor::SaveState(std::ostream& stream)
     stream.write(reinterpret_cast<const char*> (&m_iSerialCycles), sizeof(m_iSerialCycles));
     stream.write(reinterpret_cast<const char*> (&m_iIMECycles), sizeof(m_iIMECycles));
     stream.write(reinterpret_cast<const char*> (&m_iUnhaltCycles), sizeof(m_iUnhaltCycles));
-    stream.write(reinterpret_cast<const char*> (m_InterruptDelayCycles), sizeof(m_InterruptDelayCycles));
+    stream.write(reinterpret_cast<const char*> (&m_iInterruptDelayCycles), sizeof(m_iInterruptDelayCycles));
     stream.write(reinterpret_cast<const char*> (&m_bCGBSpeed), sizeof(m_bCGBSpeed));
     stream.write(reinterpret_cast<const char*> (&m_iSpeedMultiplier), sizeof(m_iSpeedMultiplier));
     stream.write(reinterpret_cast<const char*> (&m_iAccurateOPCodeState), sizeof(m_iAccurateOPCodeState));
@@ -567,7 +620,7 @@ void Processor::LoadState(std::istream& stream)
     stream.read(reinterpret_cast<char*> (&m_iSerialCycles), sizeof(m_iSerialCycles));
     stream.read(reinterpret_cast<char*> (&m_iIMECycles), sizeof(m_iIMECycles));
     stream.read(reinterpret_cast<char*> (&m_iUnhaltCycles), sizeof(m_iUnhaltCycles));
-    stream.read(reinterpret_cast<char*> (m_InterruptDelayCycles), sizeof(m_InterruptDelayCycles));
+    stream.read(reinterpret_cast<char*> (&m_iInterruptDelayCycles), sizeof(m_iInterruptDelayCycles));
     stream.read(reinterpret_cast<char*> (&m_bCGBSpeed), sizeof(m_bCGBSpeed));
     stream.read(reinterpret_cast<char*> (&m_iSpeedMultiplier), sizeof(m_iSpeedMultiplier));
     stream.read(reinterpret_cast<char*> (&m_iAccurateOPCodeState), sizeof(m_iAccurateOPCodeState));
@@ -595,6 +648,11 @@ void Processor::SetGameSharkCheat(const char* szCheat)
 void Processor::ClearGameSharkCheats()
 {
     m_GameSharkList.clear();
+}
+
+Processor::ProcessorState* Processor::GetState()
+{
+    return &m_ProcessorState;
 }
 
 void Processor::InitOPCodeFunctors()

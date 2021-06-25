@@ -25,6 +25,8 @@
 class Memory;
 class Processor;
 
+typedef u16 (*PaletteMatrix)[8][4][2];
+
 class Video
 {
 public:
@@ -32,7 +34,7 @@ public:
     ~Video();
     void Init();
     void Reset(bool bCGB);
-    bool Tick(unsigned int &clockCycles, GB_Color* pColorFrameBuffer);
+    bool Tick(unsigned int &clockCycles, u16* pColorFrameBuffer, GB_Color_Format pixelFormat);
     void EnableScreen();
     void DisableScreen();
     bool IsScreenEnabled() const;
@@ -46,20 +48,21 @@ public:
     void SetIRQ48Signal(u8 signal);
     void SaveState(std::ostream& stream);
     void LoadState(std::istream& stream);
+    PaletteMatrix GetCGBBackgroundPalettes();
+    PaletteMatrix GetCGBSpritePalettes();
 
 private:
     void ScanLine(int line);
-    void RenderBG(int line, int pixel, int count);
+    void RenderBG(int line, int pixel);
     void RenderWindow(int line);
     void RenderSprites(int line);
     void UpdateStatRegister();
-    GB_Color ConvertTo8BitColor(GB_Color color);
 
 private:
     Memory* m_pMemory;
     Processor* m_pProcessor;
     u8* m_pFrameBuffer;
-    GB_Color* m_pColorFrameBuffer;
+    u16* m_pColorFrameBuffer;
     int* m_pSpriteXCacheBuffer;
     u8* m_pColorCacheBuffer;
     int m_iStatusMode;
@@ -72,12 +75,13 @@ private:
     int m_iTileCycleCounter;
     bool m_bScreenEnabled;
     bool m_bCGB;
-    GB_Color m_CGBSpritePalettes[8][4];
-    GB_Color m_CGBBackgroundPalettes[8][4];
+    u16 m_CGBSpritePalettes[8][4][2];
+    u16 m_CGBBackgroundPalettes[8][4][2];
     bool m_bScanLineTransfered;
     int m_iWindowLine;
     int m_iHideFrames;
     u8 m_IRQ48Signal;
+    GB_Color_Format m_pixelFormat;
 };
 
 #endif	/* VIDEO_H */

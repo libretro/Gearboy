@@ -39,16 +39,29 @@ public:
         Joypad_Interrupt = 0x10
     };
 
+    struct ProcessorState
+    {        
+        SixteenBitRegister* AF;
+        SixteenBitRegister* BC;
+        SixteenBitRegister* DE;
+        SixteenBitRegister* HL;
+        SixteenBitRegister* SP;
+        SixteenBitRegister* PC;
+        bool* IME;
+        bool* Halt;
+    };
+
 public:
     Processor(Memory* pMemory);
     ~Processor();
     void Init();
     void Reset(bool bCGB);
-    u8 Tick();
+    u8 RunFor(u8 ticks);
     void RequestInterrupt(Interrupts interrupt);
     void ResetTIMACycles();
     void ResetDIVCycles();
     bool Halted() const;
+    bool DuringOpCode() const;
     bool CGBSpeed() const;
     void AddCycles(unsigned int cycles);
     bool InterruptIsAboutToRaise();
@@ -56,6 +69,11 @@ public:
     void LoadState(std::istream& stream);
     void SetGameSharkCheat(const char* szCheat);
     void ClearGameSharkCheats();
+    ProcessorState* GetState();
+    bool Disassemble(u16 address);
+    bool BreakpointHit();
+    void UpdateTimers(u8 ticks);
+    void UpdateSerial(u8 ticks);
 
 private:
     typedef void (Processor::*OPCptr) (void);
@@ -80,11 +98,12 @@ private:
     int m_iIMECycles;
     int m_iUnhaltCycles;
     bool m_bCGB;
-    int m_InterruptDelayCycles[5];
+    int m_iInterruptDelayCycles;
     bool m_bCGBSpeed;
     int m_iSpeedMultiplier;
     int m_iAccurateOPCodeState;
     u8 m_iReadCache;
+    bool m_bBreakpointHit;
 
     struct GameSharkCode
     {        
@@ -94,14 +113,11 @@ private:
     };
     std::list<GameSharkCode> m_GameSharkList;
 
+    ProcessorState m_ProcessorState;
+
 private:
-    u8 FetchOPCode();
-    void ExecuteOPCode(u8 opcode);
     Processor::Interrupts InterruptPending();
     void ServeInterrupt(Interrupts interrupt);
-    void UpdateTimers();
-    void UpdateSerial();
-    void UpdateDelayedInterrupts();
     void UpdateGameShark();
     void ClearAllFlags();
     void ToggleZeroFlagFromResult(u8 result);
@@ -114,16 +130,16 @@ private:
     void StackPop(SixteenBitRegister* reg);
     int AdjustedCycles(int cycles);
     void InvalidOPCode();
-    void OPCodes_LD(EightBitRegister* reg1, u8 reg2);
-    void OPCodes_LD(EightBitRegister* reg, u16 address);
+    void OPCodes_LD(u8* reg1, u8 reg2);
+    void OPCodes_LD(u8* reg, u16 address);
     void OPCodes_LD(u16 address, u8 reg);
     void OPCodes_OR(u8 number);
     void OPCodes_XOR(u8 number);
     void OPCodes_AND(u8 number);
     void OPCodes_CP(u8 number);
-    void OPCodes_INC(EightBitRegister* reg);
+    void OPCodes_INC(u8* reg);
     void OPCodes_INC_HL();
-    void OPCodes_DEC(EightBitRegister* reg);
+    void OPCodes_DEC(u8* reg);
     void OPCodes_DEC_HL();
     void OPCodes_ADD(u8 number);
     void OPCodes_ADC(u8 number);
@@ -131,27 +147,27 @@ private:
     void OPCodes_SBC(u8 number);
     void OPCodes_ADD_HL(u16 number);
     void OPCodes_ADD_SP(s8 number);
-    void OPCodes_SWAP_Register(EightBitRegister* reg);
+    void OPCodes_SWAP_Register(u8* reg);
     void OPCodes_SWAP_HL();
-    void OPCodes_SLA(EightBitRegister* reg);
+    void OPCodes_SLA(u8* reg);
     void OPCodes_SLA_HL();
-    void OPCodes_SRA(EightBitRegister* reg);
+    void OPCodes_SRA(u8* reg);
     void OPCodes_SRA_HL();
-    void OPCodes_SRL(EightBitRegister* reg);
+    void OPCodes_SRL(u8* reg);
     void OPCodes_SRL_HL();
-    void OPCodes_RLC(EightBitRegister* reg, bool isRegisterA = false);
+    void OPCodes_RLC(u8* reg, bool isRegisterA = false);
     void OPCodes_RLC_HL();
-    void OPCodes_RL(EightBitRegister* reg, bool isRegisterA = false);
+    void OPCodes_RL(u8* reg, bool isRegisterA = false);
     void OPCodes_RL_HL();
-    void OPCodes_RRC(EightBitRegister* reg, bool isRegisterA = false);
+    void OPCodes_RRC(u8* reg, bool isRegisterA = false);
     void OPCodes_RRC_HL();
-    void OPCodes_RR(EightBitRegister* reg, bool isRegisterA = false);
+    void OPCodes_RR(u8* reg, bool isRegisterA = false);
     void OPCodes_RR_HL();
-    void OPCodes_BIT(EightBitRegister* reg, int bit);
+    void OPCodes_BIT(u8* reg, int bit);
     void OPCodes_BIT_HL(int bit);
-    void OPCodes_SET(EightBitRegister* reg, int bit);
+    void OPCodes_SET(u8* reg, int bit);
     void OPCodes_SET_HL(int bit);
-    void OPCodes_RES(EightBitRegister* reg, int bit);
+    void OPCodes_RES(u8* reg, int bit);
     void OPCodes_RES_HL(int bit);
     void InitOPCodeFunctors();
     void OPCode0x00();

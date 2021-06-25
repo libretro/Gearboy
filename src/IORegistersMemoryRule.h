@@ -32,10 +32,10 @@ class IORegistersMemoryRule
 {
 public:
     IORegistersMemoryRule(Processor* pProcessor, Memory* pMemory, Video* pVideo, Input* pInput, Audio* pAudio);
-    virtual ~IORegistersMemoryRule();
-    virtual u8 PerformRead(u16 address);
-    virtual void PerformWrite(u16 address, u8 value);
-    virtual void Reset(bool bCGB);
+    ~IORegistersMemoryRule();
+    u8 PerformRead(u16 address);
+    void PerformWrite(u16 address, u8 value);
+    void Reset(bool bCGB);
 
 private:
     Processor* m_pProcessor;
@@ -146,6 +146,7 @@ inline u8 IORegistersMemoryRule::PerformRead(u16 address)
         }
         case 0xFF44:
         {
+            // LY
             return (m_pVideo->IsScreenEnabled() ? m_pMemory->Retrieve(0xFF44) : 0x00);
         }
         case 0xFF4C:

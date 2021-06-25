@@ -29,8 +29,20 @@
 #include <fstream>
 #include <sstream>
 
-//#define DEBUG_GEARBOY 1
-#define GEARBOY_VERSION "2.6.0"
+#ifdef DEBUG
+#define DEBUG_GEARBOY 1
+#endif
+
+#if defined(PS2) || defined(PSP)
+#define PERFORMANCE
+#endif
+
+#define GEARBOY_TITLE "Gearboy"
+#define GEARBOY_VERSION "3.3.1"
+
+#ifndef EMULATOR_BUILD
+#define EMULATOR_BUILD "undefined"
+#endif
 
 #ifndef NULL
 #define NULL 0
@@ -39,6 +51,10 @@
 #ifdef _WIN32
 #define BLARGG_USE_NAMESPACE 1
 #endif
+
+//#define GEARBOY_DISABLE_DISASSEMBLER
+
+#define MAX_ROM_SIZE 0x800000
 
 #define SafeDelete(pointer) if(pointer != NULL) {delete pointer; pointer = NULL;}
 #define SafeDeleteArray(pointer) if(pointer != NULL) {delete [] pointer; pointer = NULL;}
@@ -78,24 +94,17 @@ typedef void (*RamChangedCallback) (void);
 
 struct GB_Color
 {
-#if defined(__LIBRETRO__)
-    #if defined(IS_LITTLE_ENDIAN)
-    u8 blue;
-    u8 green;
-    u8 red;
-    u8 alpha;
-    #elif defined(IS_BIG_ENDIAN)
-    u8 alpha;
     u8 red;
     u8 green;
     u8 blue;
-    #endif
-#else
-    u8 red;
-    u8 green;
-    u8 blue;
-    u8 alpha;
-#endif
+};
+
+enum GB_Color_Format
+{
+    GB_PIXEL_RGB565,
+    GB_PIXEL_RGB555,
+    GB_PIXEL_BGR565,
+    GB_PIXEL_BGR555
 };
 
 enum Gameboy_Keys
@@ -111,6 +120,10 @@ enum Gameboy_Keys
 };
 
 #ifdef DEBUG_GEARBOY
+    #ifdef __ANDROID__
+        #include <android/log.h>
+        #define printf(...) __android_log_print(ANDROID_LOG_DEBUG, "GEARBOY", __VA_ARGS__);
+    #endif
 #define Log(msg, ...) (Log_func(msg, ##__VA_ARGS__))
 #else
 #define Log(msg, ...)
@@ -133,7 +146,7 @@ inline void Log_func(const char* const msg, ...)
 
 inline u8 SetBit(const u8 value, const u8 bit)
 {
-    return value | (0x01 << bit);
+    return value | static_cast<u8>(0x01 << bit);
 }
 
 inline u8 UnsetBit(const u8 value, const u8 bit)

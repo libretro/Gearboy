@@ -47,8 +47,8 @@ void Audio::Init()
     m_pBuffer->clock_rate(4194304);
     m_pBuffer->set_sample_rate(m_SampleRate);
 
-    m_pApu->treble_eq(-15.0);
-    m_pBuffer->bass_freq(100);
+    //m_pApu->treble_eq(-15.0);
+    //m_pBuffer->bass_freq(100);
 
     m_pApu->set_output(m_pBuffer->center(), m_pBuffer->left(), m_pBuffer->right());
 }
@@ -77,6 +77,11 @@ void Audio::SetSampleRate(int rate)
         m_SampleRate = rate;
         m_pBuffer->set_sample_rate(m_SampleRate);
     }
+}
+
+void Audio::SetVolume(float volume)
+{
+    m_pApu->volume(volume);
 }
 
 void Audio::EndFrame(s16* pSampleBuffer, int* pSampleCount)
@@ -126,4 +131,9 @@ void Audio::LoadState(std::istream& stream)
     m_pApu->reset(mode);
     m_pApu->load_state(apu_state);
     m_pBuffer->clear();
+}
+
+Gb_Apu* Audio::GetApu()
+{
+    return m_pApu;
 }

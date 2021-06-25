@@ -32,12 +32,14 @@ public:
     void Init();
     void Reset(bool bCGB);
     void SetSampleRate(int rate);
+    void SetVolume(float volume);
     u8 ReadAudioRegister(u16 address);
     void WriteAudioRegister(u16 address, u8 value);
     void Tick(unsigned int clockCycles);
     void EndFrame(s16* pSampleBuffer, int* pSampleCount);
     void SaveState(std::ostream& stream);
     void LoadState(std::istream& stream);
+    Gb_Apu* GetApu();
 
 private:
     Gb_Apu* m_pApu;

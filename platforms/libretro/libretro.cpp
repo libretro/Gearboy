@@ -38,7 +38,7 @@
 #define VIDEO_HEIGHT 144
 #define VIDEO_PIXELS (VIDEO_WIDTH * VIDEO_HEIGHT)
 
-GB_Color *gearboy_frame_buf;
+static u16* gearboy_frame_buf;
 
 static struct retro_log_callback logging;
 static retro_log_printf_t log_cb;
@@ -50,6 +50,7 @@ static int audio_sample_count;
 
 static bool force_dmg = false;
 static bool allow_up_down = false;
+static bool libretro_supports_bitmasks;
 
 static void fallback_log(enum retro_log_level level, const char *fmt, ...)
 {
@@ -60,34 +61,27 @@ static void fallback_log(enum retro_log_level level, const char *fmt, ...)
     va_end(va);
 }
 
-GearboyCore* core;
+static GearboyCore* core;
+static Cartridge::CartridgeTypes mapper = Cartridge::CartridgeNotSupported;
 
 static retro_environment_t environ_cb;
 
 static const struct retro_variable vars[] = {
     { "gearboy_model", "Emulated Model (restart); Auto|Game Boy DMG" },
+    { "gearboy_mapper", "Mapper (restart); Auto|ROM Only|MBC 1|MBC 2|MBC 3|MBC 5|MBC 1 Multicart" },
     { "gearboy_palette", "Palette; Original|Sharp|B/W|Autumn|Soft|Slime" },
     { "gearboy_up_down_allowed", "Allow Up+Down / Left+Right; Disabled|Enabled" },
 
     { NULL }
 };
-#if defined(IS_LITTLE_ENDIAN)
-// blue, green, red, alpha
-static GB_Color original_palette[4] = {{0x03, 0x96, 0x87, 0xFF},{0x03, 0x6B, 0x4D, 0xFF},{0x03, 0x55, 0x2B, 0xFF},{0x03, 0x44, 0x14, 0xFF}};
-static GB_Color sharp_palette[4] = {{0xEF, 0xFA, 0xF5, 0xFF},{0x70, 0xC2, 0x86, 0xFF},{0x57, 0x69, 0x2F, 0xFF},{0x20, 0x19, 0x0B, 0xFF}};
-static GB_Color bw_palette[4] = {{0xFF, 0xFF, 0xFF, 0xFF},{0xAA, 0xAA, 0xAA, 0xFF},{0x55, 0x55, 0x55, 0xFF},{0x00, 0x00, 0x00, 0xFF}};
-static GB_Color autumn_palette[4] = {{0xC8, 0xE8, 0xF8, 0xFF},{0x48, 0x90, 0xD8, 0xFF},{0x20, 0x34, 0xA8, 0xFF},{0x50, 0x18, 0x30, 0xFF}};
-static GB_Color soft_palette[4] = {{0xAA, 0xE0, 0xE0, 0xFF},{0x7C, 0xB8, 0xB0, 0xFF},{0x5B, 0x82, 0x72, 0xFF},{0x17, 0x34, 0x39, 0xFF}};
-static GB_Color slime_palette[4] = {{0xA5, 0xEB, 0xD4, 0xFF},{0x7C, 0xB8, 0x62, 0xFF},{0x5D, 0x76, 0x27, 0xFF},{0x39, 0x39, 0x1D, 0xFF}};
-#elif defined(IS_BIG_ENDIAN)
-// alpha, red, green, blue
-static GB_Color original_palette[4] = {{0xFF, 0x87, 0x96, 0x03},{0xFF, 0x4D, 0x6B, 0x03},{0xFF, 0x2B, 0x55, 0x03},{0xFF, 0x14, 0x44, 0x03}};
-static GB_Color sharp_palette[4] = {{0xFF, 0xF5, 0xFA, 0xEF},{0xFF, 0x86, 0xC2, 0x70},{0xFF, 0x2F, 0x69, 0x57},{0xFF, 0x0B, 0x19, 0x20}};
-static GB_Color bw_palette[4] = {{0xFF, 0xFF, 0xFF, 0xFF},{0xFF, 0xAA, 0xAA, 0xAA},{0xFF, 0x55, 0x55, 0x55},{0xFF, 0x00, 0x00, 0x00}};
-static GB_Color autumn_palette[4] = {{0xFF, 0xF8, 0xE8, 0xC8},{0xFF, 0xD8, 0x90, 0x48},{0xFF, 0xA8, 0x34, 0x20},{0xFF, 0x30, 0x18, 0x50}};
-static GB_Color soft_palette[4] = {{0xFF, 0xE0, 0xE0, 0xAA},{0xFF, 0xB0, 0xB8, 0x7C},{0xFF, 0x72, 0x82, 0x5B},{0xFF, 0x39, 0x34, 0x17}};
-static GB_Color slime_palette[4] = {{0xFF, 0xD4, 0xEB, 0xA5},{0xFF, 0x62, 0xB8, 0x7C},{0xFF, 0x27, 0x76, 0x5D},{0xFF, 0x1D, 0x39, 0x39}};
-#endif
+
+// red, green, blue
+static GB_Color original_palette[4] = {{0x87, 0x96, 0x03},{0x4D, 0x6B, 0x03},{0x2B, 0x55, 0x03},{0x14, 0x44, 0x03}};
+static GB_Color sharp_palette[4] = {{0xF5, 0xFA, 0xEF},{0x86, 0xC2, 0x70},{0x2F, 0x69, 0x57},{0x0B, 0x19, 0x20}};
+static GB_Color bw_palette[4] = {{0xFF, 0xFF, 0xFF},{0xAA, 0xAA, 0xAA},{0x55, 0x55, 0x55},{0x00, 0x00, 0x00}};
+static GB_Color autumn_palette[4] = {{0xF8, 0xE8, 0xC8},{0xD8, 0x90, 0x48},{0xA8, 0x34, 0x20},{0x30, 0x18, 0x50}};
+static GB_Color soft_palette[4] = {{0xE0, 0xE0, 0xAA},{0xB0, 0xB8, 0x7C},{0x72, 0x82, 0x5B},{0x39, 0x34, 0x17}};
+static GB_Color slime_palette[4] = {{0xD4, 0xEB, 0xA5},{0x62, 0xB8, 0x7C},{0x27, 0x76, 0x5D},{0x1D, 0x39, 0x39}};
 
 static GB_Color* current_palette = original_palette;
 
@@ -101,11 +95,17 @@ void retro_init(void)
     }
 
     core = new GearboyCore();
-    core->Init();
 
-    gearboy_frame_buf = new GB_Color[VIDEO_WIDTH * VIDEO_HEIGHT];
+#ifdef PS2
+    core->Init(GB_PIXEL_BGR555);
+#else
+    core->Init(GB_PIXEL_RGB565);
+#endif  
+
+    gearboy_frame_buf = new u16[VIDEO_WIDTH * VIDEO_HEIGHT];
 
     audio_sample_count = 0;
+    libretro_supports_bitmasks = environ_cb(RETRO_ENVIRONMENT_GET_INPUT_BITMASKS, NULL);
 }
 
 void retro_deinit(void)
@@ -127,7 +127,7 @@ void retro_set_controller_port_device(unsigned port, unsigned device)
 void retro_get_system_info(struct retro_system_info *info)
 {
     memset(info, 0, sizeof(*info));
-    info->library_name     = "Gearboy";
+    info->library_name     = GEARBOY_TITLE;
     info->library_version  = GEARBOY_VERSION;
     info->need_fullpath    = false;
     info->valid_extensions = "gb|dmg|gbc|cgb|sgb";
@@ -203,51 +203,62 @@ static void update_input(void)
 {
     input_poll_cb();
 
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP))
+    int16_t ib;
+    if (libretro_supports_bitmasks)
+        ib = input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_MASK);
+    else
     {
-        if (allow_up_down || !input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN))
+        unsigned int i;
+        ib = 0;
+        for (i = 0; i <= RETRO_DEVICE_ID_JOYPAD_R3; i++)
+            ib |= input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, i) ? (1 << i) : 0;
+    }
+
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_UP))
+    {
+        if (allow_up_down || !(ib & (1 << RETRO_DEVICE_ID_JOYPAD_DOWN)))
             core->KeyPressed(Up_Key);
     }
     else
         core->KeyReleased(Up_Key);
 
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_DOWN))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_DOWN))
     {
-        if (allow_up_down || !input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_UP))
+        if (allow_up_down || !(ib & (1 << RETRO_DEVICE_ID_JOYPAD_UP)))
             core->KeyPressed(Down_Key);
     }
     else
         core->KeyReleased(Down_Key);
 
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_LEFT))
     {
-        if (allow_up_down || !input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT))
+        if (allow_up_down || !(ib & (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT)))
             core->KeyPressed(Left_Key);
     }
     else
         core->KeyReleased(Left_Key);
 
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_RIGHT))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_RIGHT))
     {
-        if (allow_up_down || !input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT))
+        if (allow_up_down || !(ib & (1 << RETRO_DEVICE_ID_JOYPAD_LEFT)))
             core->KeyPressed(Right_Key);
     }
     else
         core->KeyReleased(Right_Key);
 
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_B))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_B))
         core->KeyPressed(B_Key);
     else
         core->KeyReleased(B_Key);
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_A))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_A))
         core->KeyPressed(A_Key);
     else
         core->KeyReleased(A_Key);
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_START))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_START))
         core->KeyPressed(Start_Key);
     else
         core->KeyReleased(Start_Key);
-    if (input_state_cb(0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_SELECT))
+    if (ib & (1 << RETRO_DEVICE_ID_JOYPAD_SELECT))
         core->KeyPressed(Select_Key);
     else
         core->KeyReleased(Select_Key);
@@ -266,6 +277,29 @@ static void check_variables(void)
             force_dmg = true;
         else
             force_dmg = false;
+    }
+
+    var.key = "gearboy_mapper";
+    var.value = NULL;
+
+    if (environ_cb(RETRO_ENVIRONMENT_GET_VARIABLE, &var) && var.value)
+    {
+        if (strcmp(var.value, "Auto") == 0)
+            mapper = Cartridge::CartridgeNotSupported;
+        else if (strcmp(var.value, "ROM Only") == 0)
+            mapper = Cartridge::CartridgeNoMBC;
+        else if (strcmp(var.value, "MBC 1") == 0)
+            mapper = Cartridge::CartridgeMBC1;
+        else if (strcmp(var.value, "MBC 2") == 0)
+            mapper = Cartridge::CartridgeMBC2;
+        else if (strcmp(var.value, "MBC 3") == 0)
+            mapper = Cartridge::CartridgeMBC3;
+        else if (strcmp(var.value, "MBC 5") == 0)
+            mapper = Cartridge::CartridgeMBC5;
+        else if (strcmp(var.value, "MBC 1 Multicart") == 0)
+            mapper = Cartridge::CartridgeMBC1Multi;
+        else
+            mapper = Cartridge::CartridgeNotSupported;
     }
 
     var.key = "gearboy_palette";
@@ -314,7 +348,7 @@ void retro_run(void)
 
     core->RunToVBlank(gearboy_frame_buf, audio_buf, &audio_sample_count);
 
-    video_cb((uint8_t*)gearboy_frame_buf, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_WIDTH * sizeof(GB_Color));
+    video_cb((uint8_t*)gearboy_frame_buf, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_WIDTH * sizeof(u16));
 
     if (audio_sample_count > 0)
         audio_batch_cb(audio_buf, audio_sample_count / 2);
@@ -328,7 +362,7 @@ void retro_reset(void)
 
     core->SetDMGPalette(current_palette[0], current_palette[1], current_palette[2], current_palette[3]);
 
-    core->ResetROMPreservingRAM(force_dmg);
+    core->ResetROMPreservingRAM(force_dmg, mapper);
 }
 
 
@@ -338,7 +372,7 @@ bool retro_load_game(const struct retro_game_info *info)
 
     core->SetDMGPalette(current_palette[0], current_palette[1], current_palette[2], current_palette[3]);
 
-    core->LoadROMFromBuffer(reinterpret_cast<const u8*>(info->data), info->size, force_dmg);
+    core->LoadROMFromBuffer(reinterpret_cast<const u8*>(info->data), info->size, force_dmg, mapper);
 
     struct retro_input_descriptor desc[] = {
         { 0, RETRO_DEVICE_JOYPAD, 0, RETRO_DEVICE_ID_JOYPAD_LEFT,   "Left" },
@@ -354,16 +388,17 @@ bool retro_load_game(const struct retro_game_info *info)
 
     environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
 
-    enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
+    enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_RGB565;
+    
     if (!environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt))
     {
-        log_cb(RETRO_LOG_INFO, "XRGB8888 is not supported.\n");
+        log_cb(RETRO_LOG_INFO, "RETRO_PIXEL_FORMAT_RGB565 is not supported.\n");
         return false;
     }
 
     snprintf(retro_game_path, sizeof(retro_game_path), "%s", info->path);
 
-    struct retro_memory_descriptor descs[9];
+    struct retro_memory_descriptor descs[11];
 
     memset(descs, 0, sizeof(descs));
 
@@ -380,7 +415,7 @@ bool retro_load_game(const struct retro_game_info *info)
     descs[2].start = 0xC000;
     descs[2].len   = 0x1000;
     // RAM bank 1
-    descs[3].ptr   = core->IsCGB() ? (core->GetMemory()->GetCGBRAM() + (0x1000 * core->GetMemory()->GetCurrentCGBRAMBank())) : (core->GetMemory()->GetMemoryMap() + 0xD000);
+    descs[3].ptr   = core->IsCGB() ? (core->GetMemory()->GetCGBRAM() + (0x1000)) : (core->GetMemory()->GetMemoryMap() + 0xD000);
     descs[3].start = 0xD000;
     descs[3].len   = 0x1000;
     // CART RAM
@@ -403,6 +438,17 @@ bool retro_load_game(const struct retro_game_info *info)
     descs[8].ptr   = core->GetMemory()->GetMemoryMap() + 0xFE00;
     descs[8].start = 0xFE00;
     descs[8].len   = 0x00A0;
+    descs[8].select= 0xFFFFFF00;
+    // CGB RAM banks 2-7
+    descs[9].ptr   = core->IsCGB() ? (core->GetMemory()->GetCGBRAM() + 0x2000) : (core->GetMemory()->GetMemoryMap() + 0xD000);
+    descs[9].start = 0x10000;
+    descs[9].len   = core->IsCGB() ? 0x6000 : 0;
+    descs[9].select= 0xFFFF0000;
+    // IO PORTS
+    descs[10].ptr   = core->GetMemory()->GetMemoryMap() + 0xFF00;
+    descs[10].start = 0xFF00;
+    descs[10].len   = 0x0080;
+    descs[10].select= 0xFFFFFF00;
 
     struct retro_memory_map mmaps;
     mmaps.descriptors = descs;

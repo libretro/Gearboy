@@ -34,20 +34,24 @@ public:
     virtual size_t GetRamSize();
     virtual u8* GetRamBanks();
     virtual u8* GetCurrentRamBank();
+    virtual int GetCurrentRamBankIndex();
     virtual u8* GetRomBank0();
+    virtual int GetCurrentRomBank0Index();
     virtual u8* GetCurrentRomBank1();
+    virtual int GetCurrentRomBank1Index();
     virtual void SaveState(std::ostream& stream);
     virtual void LoadState(std::istream& stream);
 
 private:
-    void SetRomBank();
+    void SetROMBanks();
 
 private:
-    int m_iMode;
-    int m_iCurrentROMBank;
-    int m_iFinalROMBank0;
-    int m_iFinalROMBank;
-    bool m_bRamEnabled;
+    int m_iMulticartMode;
+    int m_iROMBankHi;
+    int m_iROMBankLo;
+    int m_iMBC1Bank_1;
+    int m_iMBC1MBank_0;
+    int m_iMBC1MBank_1;
 };
 
 #endif	/* MULTIMBC1MEMORYRULE_H */
